@@ -7,10 +7,9 @@ import re
 import os
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS
+CORS(app)  
 
-# Initialize Gemini API client with your API key
-GEMINI_API_KEY = "GEMINI KEY"  # Replace with your Gemini API key
+GEMINI_API_KEY = "GEMINI KEY" 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 @app.route('/vendors', methods=['GET'])
@@ -37,12 +36,10 @@ def validate():
     try:
         # Check if the file is a PDF
         if image_file.filename.lower().endswith('.pdf'):
-            # Save the PDF temporarily
             pdf_path = os.path.join("temp.pdf")
             image_file.save(pdf_path)
             # Convert PDF to images
             images = convert_pdf_to_images(pdf_path)
-            # Delete the temporary PDF file
             os.remove(pdf_path)
         else:
             # If it's not a PDF, treat it as an image directly
@@ -72,7 +69,7 @@ def convert_pdf_to_images(pdf_path):
     """
     Converts the PDF file to a list of images (one image per page).
     """
-    images = convert_from_path(pdf_path, 300)  # 300 DPI is typically good for OCR accuracy
+    images = convert_from_path(pdf_path, 300)
     return images
 
 def process_prompt(extracted_text, prompt):
@@ -84,7 +81,7 @@ def process_prompt(extracted_text, prompt):
     extracted_text_lower = extracted_text.lower()
 
     # Use regex to find the line containing the prompt keyword
-    pattern = rf"{re.escape(prompt_lower)}.*?(\d+\.\d{2})"  # Matches "keyword ... 123.45"
+    pattern = rf"{re.escape(prompt_lower)}.*?(\d+\.\d{2})"  
     match = re.search(pattern, extracted_text_lower)
 
     if match:
@@ -109,7 +106,7 @@ def format_extracted_text(extracted_text):
     extracted_text = re.sub(r"\(Empty\)", "", extracted_text).strip() # Remove empty entries
     lines = extracted_text.splitlines()
     data = {}
-    items = []  # List to hold item data
+    items = []  
     current_item = {}
 
     for line in lines:
@@ -118,8 +115,7 @@ def format_extracted_text(extracted_text):
         if not line:
             continue
 
-        # Item line detection (improved regex)
-        item_match = re.match(r"(.+?)\s+(\d+\.\d+)", line)  # Item name + price
+        item_match = re.match(r"(.+?)\s+(\d+\.\d+)", line) 
         if item_match:
             item_name = item_match.group(1).strip()
             item_price = item_match.group(2)
@@ -128,7 +124,6 @@ def format_extracted_text(extracted_text):
             current_item = {}  # Reset for the next item
             continue  # Move to the next line
 
-        # Key-value pair extraction (improved)
         kv_match = re.match(r"(.+?):\s*(.+)", line)
         if kv_match:
             key = kv_match.group(1).strip()
@@ -136,8 +131,7 @@ def format_extracted_text(extracted_text):
             data[key] = value
             continue  # Move to the next line
 
-        # Handle other lines (potential headers)
-        if line and not current_item: # only add if it is not an item and there is no current item being built
+        if line and not current_item: 
             data[line] = None
 
 
