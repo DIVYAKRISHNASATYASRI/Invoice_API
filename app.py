@@ -10,7 +10,7 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-GEMINI_API_KEY = "AIzaSyDDrf9x6heE-nXVYljXenZI2kAMV75Fofk"  
+GEMINI_API_KEY = "GEMINI KEY"  
 genai.configure(api_key=GEMINI_API_KEY)
 
 generation_config = {
