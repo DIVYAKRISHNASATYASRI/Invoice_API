@@ -10,9 +10,13 @@ import logging
 app = Flask(__name__)
 CORS(app)
 
+<<<<<<< HEAD
 # **WARNING: Hardcoding API keys is a SECURITY RISK! Only for testing.**
 GEMINI_API_KEY = "AIzaSyDDrf9x6heE-nXVYljXenZI2kAMV75Fofk"  # Replace with your actual API key
 
+=======
+GEMINI_API_KEY = "GEMINI KEY"  
+>>>>>>> 0923b13b4e335544e6bbf8ab42621667672df9f2
 genai.configure(api_key=GEMINI_API_KEY)
 
 generation_config = {
