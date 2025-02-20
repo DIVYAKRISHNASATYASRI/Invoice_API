@@ -6,13 +6,17 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 import mimetypes
 import logging
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
 
-GEMINI_API_KEY = "Gemini Key"  # Replace with your actual API key
-GEMINI_API_KEY = "GEMINI KEY"  
+# GEMINI_API_KEY = "Gemini Key"  # Replace with your actual API key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  
 genai.configure(api_key=GEMINI_API_KEY)
 
 generation_config = {
@@ -92,8 +96,12 @@ def validate():
     try:
         # Upload the file directly to Gemini without saving it temporarily
         genai_mime_type = image_file.content_type
+        print("Uploading file.")
+        current_time = datetime.now()
         gemini_file = genai.upload_file(image_file.stream, mime_type=genai_mime_type)
-
+        upload_time_lapsed = (datetime.now() - current_time).seconds
+        print(f"File uploaded successfully, took {upload_time_lapsed}")
+        
         if gemini_file:
             wait_for_files_active([gemini_file])
         else:
@@ -118,7 +126,11 @@ def validate():
             else:
                 # Extract user code
                 extract_prompt = f"Based on the following user request: '{user_prompt}', extract the relevant information from the PDF document. If that fails, return 'Information is not available on the PDF. Do not format JSON or make code format and just display the raw.'"
+                print("Sending to gemini")
+                gemini_start_time = datetime.now()
                 response = chat_session.send_message(extract_prompt)
+                gemini_duration = (datetime.now()-gemini_start_time).seconds
+                print(f"Gemini request took {gemini_duration} seconds")
                 generated_content = response.text
                 generated_content = generated_content.replace('```json', '').replace('```', '').strip()
                 return jsonify({"Data": generated_content})
@@ -136,7 +148,7 @@ def wait_for_files_active(files):
         file = genai.get_file(name)
         while file.state.name == "PROCESSING":
             print(".", end="", flush=True)
-            time.sleep(10)
+            time.sleep(0.2)
             file = genai.get_file(name)
         if file.state.name != "ACTIVE":
             raise Exception(f"File {file.name} failed to process")
