@@ -14,6 +14,10 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> ba691346eca46eabc9098215785002e9616c1f5f
 # GEMINI_API_KEY = "Gemini Key"  # Replace with your actual API key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  
 genai.configure(api_key=GEMINI_API_KEY)
@@ -127,7 +131,11 @@ def validate():
         gemini_file = genai.upload_file(image_file.stream, mime_type=genai_mime_type)
         upload_time_lapsed = (datetime.now() - current_time).seconds
         print(f"File uploaded successfully, took {upload_time_lapsed}")
+<<<<<<< HEAD
 
+=======
+        
+>>>>>>> ba691346eca46eabc9098215785002e9616c1f5f
         if gemini_file:
             wait_for_files_active([gemini_file])
         else:
