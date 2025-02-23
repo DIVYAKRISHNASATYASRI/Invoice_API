@@ -6,17 +6,16 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 import mimetypes
 import logging
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-<<<<<<< HEAD
-# **WARNING: Hardcoding API keys is a SECURITY RISK! Only for testing.**
-GEMINI_API_KEY = "AIzaSyDDrf9x6heE-nXVYljXenZI2kAMV75Fofk"  # Replace with your actual API key
-
-=======
-GEMINI_API_KEY = "GEMINI KEY"  
->>>>>>> 0923b13b4e335544e6bbf8ab42621667672df9f2
+# GEMINI_API_KEY = "Gemini Key"  # Replace with your actual API key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  
 genai.configure(api_key=GEMINI_API_KEY)
 
 generation_config = {
@@ -43,8 +42,9 @@ db = SQLAlchemy(app)
 class Vendor(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
+    prompt = db.Column(db.String(500), nullable=True)  # Add prompt field
 
-    def __repr__(self):
+    def _repr_(self):
         return f'<Vendor {self.name}>'
 
 # Create the database (tables)
@@ -55,29 +55,55 @@ with app.app_context():
 @app.route('/vendors', methods=['GET'])
 def get_vendors():
     vendors = Vendor.query.all()
-    return jsonify([{"id": vendor.id, "name": vendor.name} for vendor in vendors])
+    return jsonify([{"id": vendor.id, "name": vendor.name, "prompt": vendor.prompt} for vendor in vendors])
 
-# Route to add a new vendor
+# Route to add a vendor (only name)
 @app.route('/add_vendor', methods=['POST'])
 def add_vendor():
-    vendor_name = request.json.get('name')
+    name = request.json.get('name')  # Get vendor name
 
-    if not vendor_name:
+    if not name:
         return jsonify({"error": "Vendor name is required"}), 400
 
-    # Create a new vendor instance
-    new_vendor = Vendor(name=vendor_name)
+    # Create a new vendor entry
+    new_vendor = Vendor(name=name)
+    db.session.add(new_vendor)
+    db.session.commit()
 
-    try:
-        # Add the vendor to the database
-        db.session.add(new_vendor)
-        db.session.commit()
-        return jsonify({"message": "Vendor added successfully!"}), 201
+    # Return the vendor id to be used for adding the prompt
+    return jsonify({"message": "Vendor added successfully!", "vendor_id": new_vendor.id}), 201
 
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error adding vendor: {e}")
-        return jsonify({"error": "An error occurred while adding the vendor"}), 500
+# Route to add prompt for an existing vendor
+@app.route('/add_prompt', methods=['POST'])
+def add_prompt():
+    vendor_id = request.json.get('vendor_id')  # Vendor ID
+    prompt = request.json.get('prompt', "")  # Vendor's prompt
+
+    if not vendor_id or not prompt:
+        return jsonify({"error": "Vendor ID and prompt are required"}), 400
+
+    # Fetch the vendor by ID
+    vendor = Vendor.query.get(vendor_id)
+    if not vendor:
+        return jsonify({"error": "Vendor not found"}), 404
+
+    # Update the prompt
+    vendor.prompt = prompt
+    db.session.commit()
+
+    return jsonify({"message": "Prompt saved successfully!"}), 201
+
+@app.route('/delete_vendor/<int:vendor_id>', methods=['DELETE'])
+def delete_vendor(vendor_id):
+    vendor = Vendor.query.get(vendor_id)
+    if not vendor:
+        return jsonify({"error": "Vendor not found"}), 404
+
+    # Delete the vendor
+    db.session.delete(vendor)
+    db.session.commit()
+
+    return jsonify({"message": f"Vendor '{vendor.name}' deleted successfully!"}), 200
 
 @app.route('/validate', methods=['POST'])
 def validate():
@@ -96,7 +122,11 @@ def validate():
     try:
         # Upload the file directly to Gemini without saving it temporarily
         genai_mime_type = image_file.content_type
+        print("Uploading file.")
+        current_time = datetime.now()
         gemini_file = genai.upload_file(image_file.stream, mime_type=genai_mime_type)
+        upload_time_lapsed = (datetime.now() - current_time).seconds
+        print(f"File uploaded successfully, took {upload_time_lapsed}")
 
         if gemini_file:
             wait_for_files_active([gemini_file])
@@ -116,15 +146,19 @@ def validate():
                 extract_prompt = "Extract all the text from this PDF document into a JSON object where the key 'pages' contains an array. Each object in the array represents a page, containing keys 'page_number' and 'raw_text' for the content. Do not include any explanations, code fences, or other formatting."
                 response = chat_session.send_message(extract_prompt)
                 generated_content = response.text
-                generated_content = generated_content.replace('```json', '').replace('```', '').strip()
+                generated_content = generated_content.replace('json', '').replace('', '').strip()
                 return jsonify({"pages": generated_content})
 
             else:
                 # Extract user code
                 extract_prompt = f"Based on the following user request: '{user_prompt}', extract the relevant information from the PDF document. If that fails, return 'Information is not available on the PDF. Do not format JSON or make code format and just display the raw.'"
+                print("Sending to gemini")
+                gemini_start_time = datetime.now()
                 response = chat_session.send_message(extract_prompt)
+                gemini_duration = (datetime.now()-gemini_start_time).seconds
+                print(f"Gemini request took {gemini_duration} seconds")
                 generated_content = response.text
-                generated_content = generated_content.replace('```json', '').replace('```', '').strip()
+                generated_content = generated_content.replace('json', '').replace('', '').strip()
                 return jsonify({"Data": generated_content})
 
         else:
@@ -140,11 +174,11 @@ def wait_for_files_active(files):
         file = genai.get_file(name)
         while file.state.name == "PROCESSING":
             print(".", end="", flush=True)
-            time.sleep(10)
+            time.sleep(0.2)
             file = genai.get_file(name)
         if file.state.name != "ACTIVE":
             raise Exception(f"File {file.name} failed to process")
     print("...all files ready")
 
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    app.run(debug=True,port=5000)
