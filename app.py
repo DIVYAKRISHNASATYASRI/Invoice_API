@@ -16,8 +16,8 @@ import stripe
 
 # Load environment variables
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "sk_test_yourkey")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 stripe.api_key = STRIPE_SECRET_KEY
 
 # Flask setup
