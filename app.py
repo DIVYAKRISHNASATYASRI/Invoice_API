@@ -1,175 +1,285 @@
 import os
 import time
-import google.generativeai as genai
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
 import mimetypes
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+import google.generativeai as genai
+import io
+import csv
+from reportlab.pdfgen import canvas
+import stripe
 
+# Load environment variables
 load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "sk_test_yourkey")
+stripe.api_key = STRIPE_SECRET_KEY
 
+# Flask setup
 app = Flask(__name__)
 CORS(app)
-
-# GEMINI_API_KEY = "Gemini Key"  # Replace with your actual API key
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  
-genai.configure(api_key=GEMINI_API_KEY)
-
-generation_config = {
-    "temperature": 0.0,  # Reduced temperature for more deterministic output
-    "top_p": 0.95,
-    "top_k": 40,
-    "max_output_tokens": 7000,  # Keep the token limit high
-    "response_mime_type": "text/plain",
-}
-model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash-lite-preview-02-05",  # Verify model support of PDFs. gemini-pro-vision might be better
-    generation_config=generation_config,
-)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
 ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'application/pdf']
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///vendors.db'  # You can change to your preferred database
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Gemini Model
+generation_config = {
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "top_k": 40,
+    "max_output_tokens": 7000,
+    "response_mime_type": "text/plain",
+}
 
-# Initialize SQLAlchemy
-db = SQLAlchemy(app)
+model = genai.GenerativeModel(
+    model_name="gemini-2.0-flash-lite-preview-02-05",
+    generation_config=generation_config,
+)
 
-# Create a Vendor model
+# =====================
+# MODELS
+# =====================
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+    stripe_subscription_id = db.Column(db.String(128), nullable=True)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+
 class Vendor(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    prompt = db.Column(db.String(500), nullable=True)  # Add prompt field
+    prompt = db.Column(db.String(500), nullable=True)
 
-    def _repr_(self):
-        return f'<Vendor {self.name}>'
 
-# Create the database (tables)
+class Invoice(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vendor = db.Column(db.String(100), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    date = db.Column(db.Date, nullable=False, default=datetime.utcnow)
+    status = db.Column(db.String(20), default="pending")
+
+
+# =====================
+# DATABASE INIT
+# =====================
 with app.app_context():
     db.create_all()
 
-# Route to fetch all vendors
+
+# =====================
+# USER AUTH ROUTES
+# =====================
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    if not data or not all([data.get('name'), data.get('email'), data.get('password')]):
+        return jsonify({"error": "Name, email and password required"}), 400
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({"error": "Email already exists"}), 400
+    user = User(name=data['name'], email=data['email'])
+    user.set_password(data['password'])
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({"message": "Registered successfully!", "user": {"id": user.id, "name": user.name, "email": user.email}}), 201
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    user = User.query.filter_by(email=data.get('email')).first()
+    if not user or not user.check_password(data.get('password')):
+        return jsonify({"error": "Invalid email or password"}), 401
+    return jsonify({"message": "Login successful!", "user": {"id": user.id, "name": user.name, "email": user.email}}), 200
+
+
+# =====================
+# VENDOR ROUTES
+# =====================
 @app.route('/vendors', methods=['GET'])
 def get_vendors():
     vendors = Vendor.query.all()
-    return jsonify([{"id": vendor.id, "name": vendor.name, "prompt": vendor.prompt} for vendor in vendors])
+    return jsonify([{"id": v.id, "name": v.name, "prompt": v.prompt} for v in vendors])
 
-# Route to add a vendor (only name)
+
 @app.route('/add_vendor', methods=['POST'])
 def add_vendor():
-    name = request.json.get('name')  # Get vendor name
-
+    name = request.json.get('name')
     if not name:
-        return jsonify({"error": "Vendor name is required"}), 400
-
-    # Create a new vendor entry
-    new_vendor = Vendor(name=name)
-    db.session.add(new_vendor)
+        return jsonify({"error": "Vendor name required"}), 400
+    vendor = Vendor(name=name)
+    db.session.add(vendor)
     db.session.commit()
+    return jsonify({"message": "Vendor added successfully!", "vendor_id": vendor.id}), 201
 
-    # Return the vendor id to be used for adding the prompt
-    return jsonify({"message": "Vendor added successfully!", "vendor_id": new_vendor.id}), 201
 
-# Route to add prompt for an existing vendor
 @app.route('/add_prompt', methods=['POST'])
 def add_prompt():
-    vendor_id = request.json.get('vendor_id')  # Vendor ID
-    prompt = request.json.get('prompt', "")  # Vendor's prompt
-
-    if not vendor_id or not prompt:
-        return jsonify({"error": "Vendor ID and prompt are required"}), 400
-
-    # Fetch the vendor by ID
+    vendor_id = request.json.get('vendor_id')
+    prompt = request.json.get('prompt')
+    if not vendor_id or prompt is None:
+        return jsonify({"error": "Vendor ID and prompt required"}), 400
     vendor = Vendor.query.get(vendor_id)
     if not vendor:
         return jsonify({"error": "Vendor not found"}), 404
-
-    # Update the prompt
     vendor.prompt = prompt
     db.session.commit()
-
     return jsonify({"message": "Prompt saved successfully!"}), 201
+
 
 @app.route('/delete_vendor/<int:vendor_id>', methods=['DELETE'])
 def delete_vendor(vendor_id):
     vendor = Vendor.query.get(vendor_id)
     if not vendor:
         return jsonify({"error": "Vendor not found"}), 404
-
-    # Delete the vendor
     db.session.delete(vendor)
     db.session.commit()
-
     return jsonify({"message": f"Vendor '{vendor.name}' deleted successfully!"}), 200
 
+
+# =====================
+# INVOICE ROUTES
+# =====================
+@app.route("/invoices", methods=["GET"])
+def get_invoices():
+    invoices = Invoice.query.all()
+    return jsonify([{"id": i.id, "vendor": i.vendor, "amount": i.amount, "date": i.date.isoformat(), "status": i.status} for i in invoices])
+
+
+@app.route("/add_invoice", methods=["POST"])
+def add_invoice():
+    data = request.json
+    if not data.get("vendor") or not data.get("amount"):
+        return jsonify({"error": "Vendor and amount required"}), 400
+    invoice = Invoice(
+        vendor=data["vendor"],
+        amount=float(data["amount"]),
+        date=datetime.strptime(data.get("date"), "%Y-%m-%d") if data.get("date") else datetime.utcnow(),
+        status=data.get("status", "pending")
+    )
+    db.session.add(invoice)
+    db.session.commit()
+    return jsonify({"message": "Invoice added successfully!", "id": invoice.id}), 201
+
+
+@app.route("/save_invoice", methods=["POST"])
+def save_invoice():
+    data = request.json
+    vendor = data.get("vendor") or data.get("vendor_id")
+    amount = data.get("amount")
+    date_str = data.get("date")
+    status = data.get("status", "pending")
+    if not vendor or amount is None:
+        return jsonify({"error": "Vendor and amount required"}), 400
+    date_obj = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.utcnow()
+    invoice = Invoice(vendor=vendor, amount=float(amount), date=date_obj, status=status)
+    db.session.add(invoice)
+    db.session.commit()
+    return jsonify({"message": "Invoice saved successfully!", "id": invoice.id}), 201
+
+
+# =====================
+# ANALYTICS
+# =====================
+@app.route('/analytics', methods=['GET'])
+def analytics():
+    try:
+        invoices = Invoice.query.all()
+        if not invoices: return jsonify([])
+        data = {}
+        for i in invoices:
+            month = i.date.strftime("%b %Y")
+            if month not in data: data[month] = {"total": 0, "count": 0}
+            data[month]["total"] += i.amount
+            data[month]["count"] += 1
+        sorted_data = [{"month": k, "total": v["total"], "count": v["count"]} for k, v in sorted(data.items(), key=lambda x: datetime.strptime(x[0], "%b %Y"))]
+        return jsonify(sorted_data)
+    except Exception as e:
+        logging.exception("Analytics error")
+        return jsonify({"error": str(e)}), 500
+
+
+# =====================
+# EXPORT INVOICES
+# =====================
+@app.route("/export/<string:file_type>", methods=["GET"])
+def export_invoices(file_type):
+    invoices = Invoice.query.all()
+    if file_type == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["ID", "Vendor", "Amount", "Date", "Status"])
+        for i in invoices: writer.writerow([i.id, i.vendor, i.amount, i.date, i.status])
+        output.seek(0)
+        return send_file(io.BytesIO(output.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="invoices.csv")
+    elif file_type == "pdf":
+        output = io.BytesIO()
+        p = canvas.Canvas(output)
+        p.setFont("Helvetica", 12)
+        y = 800
+        p.drawString(100, y, "Invoices Report")
+        y -= 40
+        for i in invoices:
+            p.drawString(100, y, f"{i.vendor} | ₹{i.amount} | {i.date.strftime('%Y-%m-%d')} | {i.status}")
+            y -= 20
+        p.save()
+        output.seek(0)
+        return send_file(output, mimetype="application/pdf", as_attachment=True, download_name="invoices.pdf")
+    return jsonify({"error": "Invalid export type"}), 400
+
+
+# =====================
+# GEMINI INVOICE VALIDATION
+# =====================
 @app.route('/validate', methods=['POST'])
 def validate():
     vendor = request.form.get('vendor')
     image_file = request.files.get('image')
-    user_prompt = request.form.get('prompt')  # Renamed 'prompt' to 'user_prompt'
-
+    user_prompt = request.form.get('prompt')
     if not image_file:
-        return jsonify({'error': 'No image or PDF uploaded'}), 400
-
+        return jsonify({'error': 'No image/PDF uploaded'}), 400
     mime_type = mimetypes.guess_type(image_file.filename)[0]
     if mime_type not in ALLOWED_MIME_TYPES:
-        logging.warning(f"Received file with invalid MIME type: {mime_type}")
-        return jsonify({'error': 'Invalid file type. Allowed types: ' + ', '.join(ALLOWED_MIME_TYPES)}), 400
-
+        return jsonify({'error': f'Invalid file type. Allowed: {ALLOWED_MIME_TYPES}'}), 400
     try:
-        # Upload the file directly to Gemini without saving it temporarily
-        genai_mime_type = image_file.content_type
-        print("Uploading file.")
-        current_time = datetime.now()
-        gemini_file = genai.upload_file(image_file.stream, mime_type=genai_mime_type)
-        upload_time_lapsed = (datetime.now() - current_time).seconds
-        print(f"File uploaded successfully, took {upload_time_lapsed}")
-
-        if gemini_file:
-            wait_for_files_active([gemini_file])
-        else:
-            logging.error("Error: Unable to upload the image to Gemini")
-            return jsonify({'error': 'Failed to upload to Gemini'}), 500
-
-        # Start chat session and pass the file
-        chat_session = model.start_chat(
-            history=[{"role": "user", "parts": [gemini_file]}]
-        )
-
+        gemini_file = genai.upload_file(image_file.stream, mime_type=image_file.content_type)
+        wait_for_files_active([gemini_file])
+        chat_session = model.start_chat(history=[{"role": "user", "parts": [gemini_file]}])
+        extracted_data = {}
         if user_prompt:
-            user_prompt = user_prompt.strip()
-
-            if user_prompt.lower() == "extract text in json":
-                extract_prompt = "Extract all the text from this PDF document into a JSON object where the key 'pages' contains an array. Each object in the array represents a page, containing keys 'page_number' and 'raw_text' for the content. Do not include any explanations, code fences, or other formatting."
-                response = chat_session.send_message(extract_prompt)
-                generated_content = response.text
-                generated_content = generated_content.replace('json', '').replace('', '').strip()
-                return jsonify({"pages": generated_content})
-
-            else:
-                # Extract user code
-                extract_prompt = f"Based on the following user request: '{user_prompt}', extract the relevant information from the PDF document. If that fails, return 'Information is not available on the PDF. Do not format JSON or make code format and just display the raw.'"
-                print("Sending to gemini")
-                gemini_start_time = datetime.now()
-                response = chat_session.send_message(extract_prompt)
-                gemini_duration = (datetime.now()-gemini_start_time).seconds
-                print(f"Gemini request took {gemini_duration} seconds")
-                generated_content = response.text
-                generated_content = generated_content.replace('json', '').replace('', '').strip()
-                return jsonify({"Data": generated_content})
-
+            response = chat_session.send_message(f"Extract info from PDF: '{user_prompt}'")
+            extracted_data["Data"] = response.text.strip()
         else:
-            return jsonify({"error": "No prompt provided"}), 400
-
+            extracted_data["Data"] = "No prompt provided"
+        # Auto-save invoice
+        amount = extracted_data.get("amount")
+        try: amount = float(amount)
+        except: amount = 0.0
+        invoice = Invoice(vendor=vendor or "Unknown", amount=amount, date=datetime.utcnow(), status="pending")
+        db.session.add(invoice)
+        db.session.commit()
+        extracted_data["saved_invoice_id"] = invoice.id
+        return jsonify(extracted_data)
     except Exception as e:
-        logging.exception("Error processing image or extracting text:")
-        return jsonify({'error': f'Error processing image or extracting text: {str(e)}'}), 500
+        logging.exception("Error processing file")
+        return jsonify({'error': str(e)}), 500
+
 
 def wait_for_files_active(files):
-    print("Waiting for file processing...")
     for name in (file.name for file in files):
         file = genai.get_file(name)
         while file.state.name == "PROCESSING":
@@ -177,8 +287,32 @@ def wait_for_files_active(files):
             time.sleep(0.2)
             file = genai.get_file(name)
         if file.state.name != "ACTIVE":
-            raise Exception(f"File {file.name} failed to process")
-    print("...all files ready")
+            raise Exception(f"File {file.name} failed processing")
 
+
+# =====================
+# STRIPE SUBSCRIPTION
+# =====================
+@app.route("/create-checkout-session", methods=["POST"])
+def create_checkout_session():
+    data = request.json
+    plan_id = data.get("planId")
+    if not plan_id:
+        return jsonify({"error": "Plan ID required"}), 400
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": plan_id, "quantity": 1}],
+            success_url="http://localhost:3000/success",
+            cancel_url="http://localhost:3000/cancel"
+        )
+        return jsonify({"url": session.url})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+# =====================
+# RUN APP
+# =====================
 if __name__ == "__main__":
-    app.run(debug=True,port=5000)
+    app.run(debug=True, port=5000)
